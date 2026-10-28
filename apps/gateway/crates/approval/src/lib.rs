@@ -18,7 +18,7 @@
 //! notification would hold the poll for its whole 30s window).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -29,8 +29,42 @@ use tracing::{debug, warn};
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-/// How long a pending approval lives before it expires (seconds).
-pub const APPROVAL_TIMEOUT_SECS: u64 = 180;
+/// Default time a pending approval lives before it expires (seconds).
+pub const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 180;
+
+/// Operator override for the approval window, clamped to
+/// [`MIN_APPROVAL_TIMEOUT_SECS`, `MAX_APPROVAL_TIMEOUT_SECS`].
+pub const APPROVAL_TIMEOUT_ENV: &str = "GATEWAY_APPROVAL_TIMEOUT_SECS";
+const MIN_APPROVAL_TIMEOUT_SECS: u64 = 30;
+const MAX_APPROVAL_TIMEOUT_SECS: u64 = 3600;
+
+/// The effective approval window in seconds: `GATEWAY_APPROVAL_TIMEOUT_SECS`
+/// clamped to [30, 3600], else 180. Read once (`OnceLock`) so `expires_at`,
+/// the held request, the poll `timeoutSeconds` and the Redis TTL always agree.
+pub fn approval_timeout_secs() -> u64 {
+    static SECS: OnceLock<u64> = OnceLock::new();
+    *SECS.get_or_init(|| resolve_approval_timeout(std::env::var(APPROVAL_TIMEOUT_ENV).ok()))
+}
+
+/// Pure resolver behind [`approval_timeout_secs`], split out so the clamp is
+/// unit-testable without touching process env. Unparsable or absent → default;
+/// out of range → clamped with a warn (a 0 would expire every card instantly).
+fn resolve_approval_timeout(raw: Option<String>) -> u64 {
+    match raw.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(v) => {
+            let clamped = v.clamp(MIN_APPROVAL_TIMEOUT_SECS, MAX_APPROVAL_TIMEOUT_SECS);
+            if clamped != v {
+                warn!(
+                    requested = v,
+                    clamped,
+                    "{APPROVAL_TIMEOUT_ENV} outside [{MIN_APPROVAL_TIMEOUT_SECS}, {MAX_APPROVAL_TIMEOUT_SECS}]; clamped"
+                );
+            }
+            clamped
+        }
+        None => DEFAULT_APPROVAL_TIMEOUT_SECS,
+    }
+}
 
 /// How often the background task cleans up expired approvals (seconds).
 const CLEANUP_INTERVAL_SECS: u64 = 30;
@@ -757,6 +791,40 @@ pub fn pending_approval_row(a: &PendingApproval) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_timeout_defaults_when_unset_or_garbage() {
+        assert_eq!(
+            resolve_approval_timeout(None),
+            DEFAULT_APPROVAL_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_approval_timeout(Some("abc".into())),
+            DEFAULT_APPROVAL_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_approval_timeout(Some("".into())),
+            DEFAULT_APPROVAL_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn approval_timeout_accepts_in_range_value() {
+        assert_eq!(resolve_approval_timeout(Some("900".into())), 900);
+        assert_eq!(resolve_approval_timeout(Some(" 600 ".into())), 600);
+    }
+
+    #[test]
+    fn approval_timeout_is_clamped() {
+        assert_eq!(
+            resolve_approval_timeout(Some("0".into())),
+            MIN_APPROVAL_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_approval_timeout(Some("999999".into())),
+            MAX_APPROVAL_TIMEOUT_SECS
+        );
+    }
+
     fn headers<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |name| {
             pairs
@@ -947,7 +1015,7 @@ mod tests {
             app: None,
             batch: None,
             created_at: now,
-            expires_at: now + APPROVAL_TIMEOUT_SECS,
+            expires_at: now + approval_timeout_secs(),
         }
     }
 

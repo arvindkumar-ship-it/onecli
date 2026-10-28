@@ -16,8 +16,13 @@ use approval::{
     DecisionWaitError, NewApprovalReceiver, NewApprovalWait, PendingApproval,
 };
 
+/// Slack on top of the approval window before Redis drops the keys.
+const REDIS_TTL_BUFFER_SECS: u64 = 10;
+
 /// TTL for Redis keys — approval timeout + buffer.
-const REDIS_TTL_SECS: u64 = 190;
+fn redis_ttl_secs() -> u64 {
+    approval::approval_timeout_secs() + REDIS_TTL_BUFFER_SECS
+}
 
 /// BLPOP waiter on a **dedicated connection**, not the shared
 /// `ConnectionManager` — BLPOP blocks the Redis connection for up to the
@@ -198,7 +203,7 @@ impl ApprovalStore for RedisApprovalStore {
 
         if let Err(e) = redis::cmd("SETEX")
             .arg(format!("approval:{org_id}:{workspace_id}:{}", approval.id))
-            .arg(REDIS_TTL_SECS)
+            .arg(redis_ttl_secs())
             .arg(&json)
             .query_async::<()>(&mut conn)
             .await
@@ -214,7 +219,7 @@ impl ApprovalStore for RedisApprovalStore {
             .await;
         let _ = redis::cmd("EXPIRE")
             .arg(&set_key)
-            .arg(REDIS_TTL_SECS)
+            .arg(redis_ttl_secs())
             .query_async::<()>(&mut conn)
             .await;
 
@@ -237,7 +242,7 @@ impl ApprovalStore for RedisApprovalStore {
             .await;
         let _ = redis::cmd("EXPIRE")
             .arg(&org_set_key)
-            .arg(REDIS_TTL_SECS)
+            .arg(redis_ttl_secs())
             .query_async::<()>(&mut conn)
             .await;
         let _ = redis::cmd("PUBLISH")
@@ -436,7 +441,7 @@ impl ApprovalStore for RedisApprovalStore {
         // Set TTL on the decision key (cleanup if BLPOP never reads it)
         let _ = redis::cmd("EXPIRE")
             .arg(format!("approval:decision:{org_id}:{workspace_id}:{id}"))
-            .arg(REDIS_TTL_SECS)
+            .arg(redis_ttl_secs())
             .query_async::<()>(&mut conn)
             .await;
 

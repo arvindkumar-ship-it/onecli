@@ -34,8 +34,8 @@ use tower_http::cors::CorsLayer;
 use tracing::{debug, info, info_span, warn, Instrument};
 
 use approval::{
-    ApprovalDecision, ApprovalStore, DecisionOutcome, DenyReason, PendingApproval,
-    APPROVAL_TIMEOUT_SECS,
+    approval_timeout_secs, ApprovalDecision, ApprovalStore, DecisionOutcome, DenyReason,
+    PendingApproval,
 };
 use ca::CertificateAuthority;
 use cache::CacheStore;
@@ -605,7 +605,7 @@ async fn get_pending_approvals(
 
         axum::Json(serde_json::json!({
             "requests": pending.iter().map(pending_approval_row).collect::<Vec<_>>(),
-            "timeoutSeconds": APPROVAL_TIMEOUT_SECS,
+            "timeoutSeconds": approval_timeout_secs(),
         }))
     }
     .instrument(span)
