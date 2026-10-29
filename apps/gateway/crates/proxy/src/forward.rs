@@ -887,7 +887,7 @@ pub async fn forward_request(
                         .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
                 }),
                 created_at: now,
-                expires_at: now + approval::approval_timeout_secs(),
+                expires_at: approval::approval_expires_at(now),
             };
 
             let decision_rx = approval_store
@@ -948,7 +948,7 @@ pub async fn forward_request(
 
             let mut shutdown_signal = shutdown::subscribe();
             let outcome = tokio::select! {
-                outcome = decision_rx.wait(Duration::from_secs(approval::approval_timeout_secs())) => {
+                outcome = decision_rx.wait(approval::approval_wait_duration()) => {
                     Some(outcome)
                 }
                 // Shutting down with nobody having decided. Left alone this
